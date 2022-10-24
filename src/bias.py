@@ -34,6 +34,7 @@ BIBBIAS_CACHE_PATH = Path(
 )
 BIBBIAS_CACHE_PATH.mkdir(exist_ok=True, parents=True)
 
+
 def _parser():
     parser = argparse.ArgumentParser(
         description="Run gender analytics on an existing BibTeX file",
@@ -63,9 +64,9 @@ def main(argv=None):
 def find_gender(bibstr, cached=None):
     """Find the gender for a given bib file."""
 
-    matches = re.findall(r'author\s=\s+\{(.*?)\}', bibstr, re.DOTALL)
+    matches = re.findall(r"author\s=\s+\{(.*?)\}", bibstr, re.DOTALL)
     author_lists = [m.replace("\n", " ") for m in matches]
-    bib_id = re.findall(r'@\w+\{(.*?),', bibstr)
+    bib_id = re.findall(r"@\w+\{(.*?),", bibstr)
     strip_initial = re.compile(r"\s*\w\.\s*")
 
     if cached is None and (BIBBIAS_CACHE_PATH / "names.cache").exists():
@@ -83,7 +84,7 @@ def find_gender(bibstr, cached=None):
             (first, cached.get(first, None)),
             (last, cached.get(last, None)),
         )
-        
+
         for f, n in data[bid]:
             if n is None:
                 missed.add(f)
@@ -127,15 +128,13 @@ def query_names(nameset):
     # Store responses?
     return cached
 
+
 def report_gender(data):
     """Generate a dictionary reporting gender of first and last authors."""
 
-    retval = {
-        "".join(c): 0 for c in product(("M", "F", "None"), repeat=2)
-    }
+    retval = {"".join(c): 0 for c in product(("M", "F", "None"), repeat=2)}
     for first, last in data.values():
         retval[f"{first[1]}{last[1]}"] += 1
-
 
     return retval
 
