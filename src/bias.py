@@ -21,56 +21,124 @@
 #
 #     https://www.nipreps.org/community/licensing/
 #
+import os
 import sys
+import argparse
+import json
 from pathlib import Path
-import pandas as pd
+from itertools import product
+import re
 
-from ruamel.yaml import YAML
+BIBBIAS_CACHE_PATH = Path(
+    os.getenv("BIBBIAS_CACHE_PATH", str(Path.home() / ".cache" / "bibbias"))
+)
+BIBBIAS_CACHE_PATH.mkdir(exist_ok=True, parents=True)
 
-# Read bib file
-# to minimize bibtex -o minimized.bib texfile.aux
-bibstr = Path("minimized.bib").read_text()
-matches = re.findall(r'author\s=\s+\{(.*?)\}', bibstr, re.DOTALL)
-author_lists = [m.replace("\n", " ") for m in matches]
-bib_id = re.findall(r'@\w+\{(.*?),', bibstr)
-
-gender_cache = json.loads(Path("names.cache").read_text())
-
-# gender-api key
-gender_api_query = "https://gender-api.com/get?name={name}&key={api_key}".format
-
-data = {}
-names = set()
-for bid, authors in zip(bib_id, author_lists):
-    authlst = authors.split(" and")
-    first = strip_initial.sub("", authlst[0].strip().split(",")[-1].strip().lower())
-    last = strip_initial.sub("", authlst[-1].strip().split(",")[-1].strip().lower())
-    data[bid] = (
-        (first, gender_cache.get(first, None)),
-        (last, gender_cache.get(last, None)),
+def _parser():
+    parser = argparse.ArgumentParser(
+        description="Run gender analytics on an existing BibTeX file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
-    for f, n in data[bid]:
-        if n is None:
-            names.add(f)
-            
-for n, g in gender_cache.items():
-    if g is None:
+    parser.add_argument("bib_file", type=Path, help="The input bibtex file")
+    return parser
+
+
+def main(argv=None):
+    """Execute querying."""
+
+    pargs = _parser().parse_args(argv)
+    # Read bib file
+    # to minimize bibtex -o minimized.bib texfile.aux
+    bibstr = pargs.bib_file.read_text()
+
+    # first pass
+    resolved, missed = find_gender(bibstr)
+
+    if missed:
+        resolved, missed = find_gender(bibstr, query_names(missed))
+
+    print(report_gender(resolved))
+
+
+def find_gender(bibstr, cached=None):
+    """Find the gender for a given bib file."""
+
+    matches = re.findall(r'author\s=\s+\{(.*?)\}', bibstr, re.DOTALL)
+    author_lists = [m.replace("\n", " ") for m in matches]
+    bib_id = re.findall(r'@\w+\{(.*?),', bibstr)
+    strip_initial = re.compile(r"\s*\w\.\s*")
+
+    if cached is None and (BIBBIAS_CACHE_PATH / "names.cache").exists():
+        cached = json.loads((BIBBIAS_CACHE_PATH / "names.cache").read_text())
+
+    cached = cached or {}
+
+    data = {}
+    missed = set()
+    for bid, authors in zip(bib_id, author_lists):
+        authlst = authors.split(" and")
+        first = strip_initial.sub("", authlst[0].strip().split(",")[-1].strip().lower())
+        last = strip_initial.sub("", authlst[-1].strip().split(",")[-1].strip().lower())
+        data[bid] = (
+            (first, cached.get(first, None)),
+            (last, cached.get(last, None)),
+        )
+        
+        for f, n in data[bid]:
+            if n is None:
+                missed.add(f)
+
+    return data, missed
+
+
+def query_names(nameset):
+    """Lookup names in local cache, if not found hit Gender API."""
+
+    cached = (
+        json.loads((BIBBIAS_CACHE_PATH / "names.cache").read_text())
+        if (BIBBIAS_CACHE_PATH / "names.cache").exists()
+        else {}
+    )
+    misses = sorted(set(nameset) - set(cached.keys()))
+
+    if not misses:
+        return cached
+
+    # gender-api key
+    api_key = os.getenv("GENDER_API_KEY", None)
+    if api_key is None:
+        print(f"No Gender API key - {len(misses)} names could not be mapped.")
+        return cached
+
+    gender_api_query = f"https://gender-api.com/get?name={{name}}&key={api_key}".format
+
+    responses = {}
+    for n in misses:
         print(f"Querying for {n}")
-        q = requests.get(gender_api_query(name=n, api_key=api_key))
+        q = requests.get(gender_api_query(name=n))
         if q.ok:
             responses[n] = q.json()
             if int(responses[n]["accuracy"]) >= 60:
-                gender_cache[n] = "F" if responses[n]["gender"] == "female" else "M"
+                cached[n] = "F" if responses[n]["gender"] == "female" else "M"
 
-# Store cache
+    # Store cache
+    (BIBBIAS_CACHE_PATH / "names.cache").write_text(json.dumps(cached, indent=2))
 
-# Store responses?
+    # Store responses?
+    return cached
 
-nfirsts = {"M": 0, "F": 0}
-nlasts = {"M": 0, "F": 0}
-comb = {"MM": 0, "MF": 0, "FM": 0, "FF": 0}
-for first, last in data.values():
-    nfirsts[first[1]] += 1
-    nlasts[last[1]] += 1
-    comb[f"{first[1]}{last[1]}"] += 1
+def report_gender(data):
+    """Generate a dictionary reporting gender of first and last authors."""
+
+    retval = {
+        "".join(c): 0 for c in product(("M", "F", "None"), repeat=2)
+    }
+    for first, last in data.values():
+        retval[f"{first[1]}{last[1]}"] += 1
+
+
+    return retval
+
+
+if __name__ == "__main__":
+    main()
