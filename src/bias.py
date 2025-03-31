@@ -29,6 +29,9 @@ from pathlib import Path
 from itertools import product
 import re
 
+import requests
+
+
 BIBBIAS_CACHE_PATH = Path(
     os.getenv("BIBBIAS_CACHE_PATH", str(Path.home() / ".cache" / "bibbias"))
 )
