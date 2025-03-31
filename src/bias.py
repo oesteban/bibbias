@@ -44,6 +44,13 @@ LA_NAME = "la_name"
 LA_SEX = "la_sex"
 NAME = "name"
 
+FF = "FF"
+FM = "FM"
+MM = "MM"
+MF = "MF"
+CATEGORY = "Category"
+RATIO = "Ratio"
+
 
 def _parser():
     parser = argparse.ArgumentParser(
@@ -54,6 +61,7 @@ def _parser():
     parser.add_argument("missed_query_file", type=Path, help="The missed query data file")
     parser.add_argument("resolved_query_file", type=Path, help="The resolved query data file")
     parser.add_argument("gender_report_file", type=Path, help="The gender report data file")
+    parser.add_argument("stats_report_file", type=Path, help="The stats report data file")
     return parser
 
 
@@ -80,15 +88,19 @@ def main(argv=None):
     na_rep = "NA"
 
     # Missed and resolved query data
-    df = pd.DataFrame(list(missed), columns=[NAME])
-    df.to_csv(pargs.missed_query_file, sep=sep, index=index, na_rep=na_rep)
+    df_missed = pd.DataFrame(list(missed), columns=[NAME])
+    df_missed.to_csv(pargs.missed_query_file, sep=sep, index=index, na_rep=na_rep)
 
-    df = create_author_gender_df(resolved)
-    df.to_csv(pargs.resolved_query_file, sep=sep, index=index, na_rep=na_rep)
+    df_resolved = create_author_gender_df(resolved)
+    df_resolved.to_csv(pargs.resolved_query_file, sep=sep, index=index, na_rep=na_rep)
 
     # Gender report
-    df = pd.DataFrame([gender_report])
-    df.to_csv(pargs.gender_report_file, sep=sep, index=index)
+    df_gender = pd.DataFrame([gender_report])
+    df_gender.to_csv(pargs.gender_report_file, sep=sep, index=index)
+
+    # Compute stats
+    df = compute_gender_stats(df_gender)
+    df.to_csv(pargs.stats_report_file, sep=sep, index=index, na_rep=na_rep)
 
 
 def find_gender(bibstr, cached=None):
@@ -199,6 +211,16 @@ def create_author_gender_df(author_gender_data):
         "LA_NAME": la_names,
         "LA_GENDER": la_gender,
     })
+
+
+def compute_gender_stats(df):
+    total = df.sum(axis=1).iloc[0]
+    ratios = df.iloc[0] / total
+
+    ratios_df = pd.DataFrame(ratios).reset_index()
+    ratios_df.columns = [CATEGORY, RATIO]
+
+    return ratios_df
 
 
 if __name__ == "__main__":
