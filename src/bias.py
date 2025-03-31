@@ -21,12 +21,12 @@
 #
 #     https://www.nipreps.org/community/licensing/
 #
-import os
 import argparse
+import os
 import json
+import re
 from pathlib import Path
 from itertools import product
-import re
 
 import requests
 
