@@ -22,7 +22,6 @@
 #     https://www.nipreps.org/community/licensing/
 #
 import os
-import sys
 import argparse
 import json
 from pathlib import Path
