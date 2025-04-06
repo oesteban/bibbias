@@ -31,10 +31,27 @@ from itertools import product
 import requests
 
 
+import pandas as pd
+
+
 BIBBIAS_CACHE_PATH = Path(
     os.getenv("BIBBIAS_CACHE_PATH", str(Path.home() / ".cache" / "bibbias"))
 )
 BIBBIAS_CACHE_PATH.mkdir(exist_ok=True, parents=True)
+
+BIB_KEY = "bib_key"
+FA_NAME = "fa_name"
+FA_SEX = "fa_sex"
+LA_NAME = "la_name"
+LA_SEX = "la_sex"
+NAME = "name"
+
+FF = "FF"
+FM = "FM"
+MM = "MM"
+MF = "MF"
+CATEGORY = "Category"
+RATIO = "Ratio"
 
 
 def _parser():
@@ -43,6 +60,10 @@ def _parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("bib_file", type=Path, help="The input bibtex file")
+    parser.add_argument("missed_query_file", type=Path, help="The missed query data file")
+    parser.add_argument("resolved_query_file", type=Path, help="The resolved query data file")
+    parser.add_argument("gender_report_file", type=Path, help="The gender report data file")
+    parser.add_argument("stats_report_file", type=Path, help="The stats report data file")
     return parser
 
 
@@ -60,7 +81,28 @@ def main(argv=None):
     if missed:
         resolved, missed = find_gender(bibstr, query_names(missed))
 
-    print(report_gender(resolved))
+    gender_report = report_gender(resolved)
+    print(gender_report)
+
+    # Save data
+    sep = "\t"
+    index = False
+    na_rep = "NA"
+
+    # Missed and resolved query data
+    df_missed = pd.DataFrame(list(missed), columns=[NAME])
+    df_missed.to_csv(pargs.missed_query_file, sep=sep, index=index, na_rep=na_rep)
+
+    df_resolved = create_author_gender_df(resolved)
+    df_resolved.to_csv(pargs.resolved_query_file, sep=sep, index=index, na_rep=na_rep)
+
+    # Gender report
+    df_gender = pd.DataFrame([gender_report])
+    df_gender.to_csv(pargs.gender_report_file, sep=sep, index=index)
+
+    # Compute stats
+    df = compute_gender_stats(df_gender)
+    df.to_csv(pargs.stats_report_file, sep=sep, index=index, na_rep=na_rep)
 
 
 def find_gender(bibstr, cached=None):
@@ -139,6 +181,48 @@ def report_gender(data):
         retval[f"{first[1]}{last[1]}"] += 1
 
     return retval
+
+
+def create_author_gender_df(author_gender_data):
+
+    # Prepare lists to hold the data for the DataFrame
+    keys = []
+    fa_names = []
+    fa_gender = []
+    la_names = []
+    la_gender = []
+
+    # Process each key and tuple
+    for key, value in author_gender_data.items():
+        keys.append(key)
+
+        # Unpack the tuples (ensure handling of cases with one tuple only)
+        _fa_name, _fa_gender = value[0]
+        _la_name, _la_gender = value[1]
+
+        fa_names.append(_fa_name)
+        fa_gender.append(_fa_gender)
+        la_names.append(_la_name)
+        la_gender.append(_la_gender)
+
+    # Create a DataFrame
+    return pd.DataFrame({
+        "BIB_KEY": keys,
+        "FA_NAME": fa_names,
+        "FA_GENDER": fa_gender,
+        "LA_NAME": la_names,
+        "LA_GENDER": la_gender,
+    })
+
+
+def compute_gender_stats(df):
+    total = df.sum(axis=1).iloc[0]
+    ratios = df.iloc[0] / total
+
+    ratios_df = pd.DataFrame(ratios).reset_index()
+    ratios_df.columns = [CATEGORY, RATIO]
+
+    return ratios_df
 
 
 if __name__ == "__main__":
