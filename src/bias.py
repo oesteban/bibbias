@@ -25,8 +25,9 @@ import os
 import sys
 import argparse
 import json
+import requests
 from pathlib import Path
-from itertools import product
+from collections import defaultdict
 import re
 
 BIBBIAS_CACHE_PATH = Path(
@@ -77,13 +78,21 @@ def find_gender(bibstr, cached=None):
     data = {}
     missed = set()
     for bid, authors in zip(bib_id, author_lists):
-        authlst = authors.split(" and")
-        first = strip_initial.sub("", authlst[0].strip().split(",")[-1].strip().lower())
-        last = strip_initial.sub("", authlst[-1].strip().split(",")[-1].strip().lower())
-        data[bid] = (
-            (first, cached.get(first, None)),
-            (last, cached.get(last, None)),
-        )
+        if authors.startswith("{") and "}" not in authors:
+            authors = authors[1:]
+            data[bid] = ((authors, "C"), (authors, "C"))
+        else:
+            authlst = authors.split(" and")
+            first = strip_initial.sub("", authlst[0].strip().split(",")[-1].strip().lower())
+            last = strip_initial.sub("", authlst[-1].strip().split(",")[-1].strip().lower())
+
+            if first and last:
+                data[bid] = (
+                    (first, cached.get(first, None)),
+                    (last, cached.get(last, None)),
+                )
+            else:
+                print(f"Discarding reference {bid}: ('{first}', 'last').")
 
         for f, n in data[bid]:
             if n is None:
@@ -108,7 +117,9 @@ def query_names(nameset):
     # gender-api key
     api_key = os.getenv("GENDER_API_KEY", None)
     if api_key is None:
-        print(f"No Gender API key - {len(misses)} names could not be mapped.")
+        print(
+            f"No Gender API key - {len(misses)} names could not be mapped: {misses}."
+        )
         return cached
 
     gender_api_query = f"https://gender-api.com/get?name={{name}}&key={api_key}".format
@@ -119,8 +130,14 @@ def query_names(nameset):
         q = requests.get(gender_api_query(name=n))
         if q.ok:
             responses[n] = q.json()
-            if int(responses[n]["accuracy"]) >= 60:
-                cached[n] = "F" if responses[n]["gender"] == "female" else "M"
+            accuracy = int(responses[n]["accuracy"])
+            if accuracy >= 60:
+                cached[n] = "F" if responses[n]["gender"] == "female" else "M"   
+                print(f"{n}: {cached[n]} ({accuracy}%).")
+            elif accuracy >= 40:
+                cached[n] = "N"
+            else:
+                cached[n] = "Unknown"
 
     # Store cache
     (BIBBIAS_CACHE_PATH / "names.cache").write_text(json.dumps(cached, indent=2))
@@ -132,10 +149,22 @@ def query_names(nameset):
 def report_gender(data):
     """Generate a dictionary reporting gender of first and last authors."""
 
-    retval = {"".join(c): 0 for c in product(("M", "F", "None"), repeat=2)}
+    summary = defaultdict(int)
     for first, last in data.values():
-        retval[f"{first[1]}{last[1]}"] += 1
+        summary[f"{first[1]}{last[1]}"] += 1
 
+    total = float(sum(summary.values()))
+
+    retval = f"""Summary:
+  - Total authors = {total}.
+  - Consortium: {summary['CC']}.
+  - Unknown gender: first {sum(v for k, v in summary.items() if k.startswith("U"))}, last {sum(v for k, v in summary.items() if k.endswith("U"))}.
+  - Woman first author: {100. * sum(v for k, v in summary.items() if k.startswith("F")) / total:.02f}%.
+  - Woman last author: {100. * sum(v for k, v in summary.items() if k.endswith("F")) / total:.02f}%.
+  - Woman first, and last: {100. * summary["FF"] / total}% (i.e., {100. * summary["FF"] / float(summary["FM"] + summary["FF"])}% of female-first).
+  - Male last: {100. * (summary["FM"] + summary["MM"]) / total}%.
+  - Male first, woman last: {100. * summary["MF"] / total}% ({100. * summary["MF"] / float(summary["MF"] + summary["FF"])}% of female-last).
+"""
     return retval
 
 
