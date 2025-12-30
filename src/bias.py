@@ -154,22 +154,38 @@ def report_gender(df):
     last_female_n = (df["last_gender"] == "F").sum()
     first_neutral_n = (df["first_gender"] == "N").sum()
     last_neutral_n = (df["last_gender"] == "N").sum()
+    neutral_n = ((df["first_gender"] == "N") | (df["last_gender"] == "N")).sum()
 
     female_first_and_last = ((df["first_gender"] == "F") & (df["last_gender"] == "F")).sum()
     female_first_male_last = ((df["first_gender"] == "F") & (df["last_gender"] == "M")).sum()
     male_first_female_last = ((df["first_gender"] == "M") & (df["last_gender"] == "F")).sum()
 
-    return f"""Summary:
-  - Total references = {total_n}.
-  - Consortium: {consortia_n}.
-  - Neutral/ambiguous gender: {first_neutral_n}/{last_neutral_n} (first/last).
-  - Female first author: {first_female_n} ({100. * first_female_n / total:.02f}%).
-  - Female last author: {last_female_n} ({100. * last_female_n / total:.02f}%).
-  - Female first&last: {female_first_and_last} ({100. * female_first_and_last / total:.02f}%; {100. * female_first_and_last / first_female_n:.02f}% of female-first).
-  - Female first, male last: {female_first_male_last} ({100. * female_first_male_last / total:0.2f}%; {100. * female_first_male_last / first_female_n:0.2f}% of female-first).
-  - Male first author: {first_male_n} ({100. * first_male_n / total:.02f}%).
-  - Male last author: {last_male_n} ({100. * last_male_n / total:.02f}%).
-  - Male first, female last: {male_first_female_last} ({100. * male_first_female_last / total:0.2f}%; {100. * male_first_female_last / last_female_n:0.2f}% of female-last).
+    return f"""\
+# Citation diversity statement
+
+To quantify gender representation in our reference list, we used *bibbias* \
+(a name-based bibliometric audit tool; https://github.com/oesteban/bibbias) \
+to infer the likely gender (male/female/neutral) of the first and last authors \
+of each cited work from first names, via queries to Gender API (https://gender-api.com). \
+Entries authored by a single group/consortium (no individual first name) were excluded. \
+This approach provides an approximate, name-based estimate and does not capture \
+self-identified gender, nonbinary identities, or within-name/cultural variation; \
+misclassification is possible, and results should be interpreted as descriptive \
+rather than definitive.
+
+Across {total_n} total references, {consortia_n} consortium-authored references were \
+excluded and {total - neutral_n}/{total} remaining references received \
+a gender assignment for both first and last authors \
+(i.e., {neutral_n} neutral/ambiguous in first or last position). \
+Among these {total} references, the first author was inferred as female \
+in {first_female_n} ({100. * first_female_n / total:.02f}%) and \
+male in {first_male_n} ({100. * first_male_n / total:.02f}%); \
+the last author was inferred as \
+female in {last_female_n} ({100. * last_female_n / total:.02f}%) and \
+male in {last_male_n} ({100. * last_male_n / total:.02f}%). \
+Female first & female last occurred in {female_first_and_last} ({100. * female_first_and_last / total:.02f}%) references; \
+female first & male last in {female_first_male_last} ({100. * female_first_male_last / total:0.2f}%); and \
+male first & female last in {male_first_female_last} ({100. * male_first_female_last / total:0.2f}%) (39.39% of female-last).
 """
 
 
