@@ -30,10 +30,14 @@ from pathlib import Path
 from collections import defaultdict
 import re
 
+import numpy as np
+import pandas as pd
+
 BIBBIAS_CACHE_PATH = Path(
     os.getenv("BIBBIAS_CACHE_PATH", str(Path.home() / ".cache" / "bibbias"))
 )
 BIBBIAS_CACHE_PATH.mkdir(exist_ok=True, parents=True)
+GENDER_API_QUERY = "https://gender-api.com/get?name={name}&key={api_key}"
 
 
 def _parser():
@@ -53,16 +57,24 @@ def main(argv=None):
     # to minimize bibtex -o minimized.bib texfile.aux
     bibstr = pargs.bib_file.read_text()
 
+    # gender-api key
+    api_key = os.getenv("GENDER_API_KEY", None)
+
+    cached = None
+    if (BIBBIAS_CACHE_PATH / "names.cache").exists():
+        cached = json.loads((BIBBIAS_CACHE_PATH / "names.cache").read_text())
+
     # first pass
-    resolved, missed = find_gender(bibstr)
+    resolved_df, cached = extract_metadata(bibstr, cached=cached, api_key=api_key)
 
-    if missed:
-        resolved, missed = find_gender(bibstr, query_names(missed))
+    # Update cache
+    (BIBBIAS_CACHE_PATH / "names.cache").write_text(json.dumps(dict(sorted(cached.items())), indent=2))
 
-    print(report_gender(resolved))
+    resolved_df.to_csv('bibbias_output.tsv', index=False, sep='\t', na_rep='n/a')
 
+    print(report_gender(resolved_df))
 
-def find_gender(bibstr, cached=None):
+def extract_metadata(bibstr, cached=None, api_key=None):
     """Find the gender for a given bib file."""
 
     matches = re.findall(r"author\s=\s+\{(.*?)\}", bibstr, re.DOTALL)
@@ -70,102 +82,95 @@ def find_gender(bibstr, cached=None):
     bib_id = re.findall(r"@\w+\{(.*?),", bibstr)
     strip_initial = re.compile(r"\s*\w\.\s*")
 
-    if cached is None and (BIBBIAS_CACHE_PATH / "names.cache").exists():
-        cached = json.loads((BIBBIAS_CACHE_PATH / "names.cache").read_text())
-
     cached = cached or {}
-
-    data = {}
-    missed = set()
+    bib_entries = []
+    dropped = {}
     for bid, authors in zip(bib_id, author_lists):
+        data = {"bib_id": bid}
+
         if authors.startswith("{") and "}" not in authors:
-            authors = authors[1:]
-            data[bid] = ((authors, "C"), (authors, "C"))
-        else:
-            authlst = authors.split(" and")
-            first = strip_initial.sub("", authlst[0].strip().split(",")[-1].strip().lower())
-            last = strip_initial.sub("", authlst[-1].strip().split(",")[-1].strip().lower())
+            data["first_gender"] = "C"
+            data["first_name"] = authors[1:]
+            data["last_gender"] = np.nan
+            data["last_name"] = np.nan
+            bib_entries.append(data)
+            continue
 
-            if first and last:
-                data[bid] = (
-                    (first, cached.get(first, None)),
-                    (last, cached.get(last, None)),
-                )
-            else:
-                print(f"Discarding reference {bid}: ('{first}', 'last').")
+        authlst = authors.split(" and")
+        first = strip_initial.sub("", authlst[0].strip().split(",")[-1].strip().lower())
+        last = strip_initial.sub("", authlst[-1].strip().split(",")[-1].strip().lower())
 
-        for f, n in data[bid]:
-            if n is None:
-                missed.add(f)
+        if first and last:
+            first_gender = cached.get(first, None) or query_gender_api(first, api_key)
+            if first_gender is not None:
+                cached[first] = first_gender
 
-    return data, missed
+            last_gender = cached.get(last, None) or query_gender_api(last, api_key)
+            if last_gender is not None:
+                cached[last] = last_gender
+
+            data.update({
+                "first_name": first,
+                "first_gender": first_gender,
+                "last_name": last,
+                "last_gender":  last_gender,
+            })
+            bib_entries.append(data)
+            continue
+
+        dropped[bid] = authors
+
+    return pd.DataFrame(bib_entries), cached
 
 
-def query_names(nameset):
-    """Lookup names in local cache, if not found hit Gender API."""
-
-    cached = (
-        json.loads((BIBBIAS_CACHE_PATH / "names.cache").read_text())
-        if (BIBBIAS_CACHE_PATH / "names.cache").exists()
-        else {}
-    )
-    misses = sorted(set(nameset) - set(cached.keys()))
-
-    if not misses:
-        return cached
-
-    # gender-api key
-    api_key = os.getenv("GENDER_API_KEY", None)
+def query_gender_api(name, api_key):
     if api_key is None:
-        print(
-            f"No Gender API key - {len(misses)} names could not be mapped: {misses}."
-        )
-        return cached
+        return None
 
-    gender_api_query = f"https://gender-api.com/get?name={{name}}&key={api_key}".format
+    print(f"Querying GenderAPI for name: {name}", file=sys.stderr)
+    q = requests.get(GENDER_API_QUERY.format(name=name, api_key=api_key))
+    if q.ok:
+        response = q.json()
+        accuracy = int(response["accuracy"])
+        gender = response["gender"][0].upper() if accuracy >= 60 else "N"
 
-    responses = {}
-    for n in misses:
-        print(f"Querying for {n}")
-        q = requests.get(gender_api_query(name=n))
-        if q.ok:
-            responses[n] = q.json()
-            accuracy = int(responses[n]["accuracy"])
-            if accuracy >= 60:
-                cached[n] = "F" if responses[n]["gender"] == "female" else "M"   
-                print(f"{n}: {cached[n]} ({accuracy}%).")
-            elif accuracy >= 40:
-                cached[n] = "N"
-            else:
-                cached[n] = "Unknown"
+        if accuracy < 40:
+            gender = "U"
+        
+        return gender
 
-    # Store cache
-    (BIBBIAS_CACHE_PATH / "names.cache").write_text(json.dumps(cached, indent=2))
-
-    # Store responses?
-    return cached
+    return None
 
 
-def report_gender(data):
+def report_gender(df):
     """Generate a dictionary reporting gender of first and last authors."""
 
-    summary = defaultdict(int)
-    for first, last in data.values():
-        summary[f"{first[1]}{last[1]}"] += 1
+    total_n = df.shape[0]
+    consortia_n = (df["first_gender"] == "C").sum()
+    total = total_n - consortia_n
+    first_male_n = (df["first_gender"] == "M").sum()
+    first_female_n = (df["first_gender"] == "F").sum()
+    last_male_n = (df["last_gender"] == "M").sum()
+    last_female_n = (df["last_gender"] == "F").sum()
+    first_neutral_n = (df["first_gender"] == "N").sum()
+    last_neutral_n = (df["last_gender"] == "N").sum()
 
-    total = float(sum(summary.values()))
+    female_first_and_last = ((df["first_gender"] == "F") & (df["last_gender"] == "F")).sum()
+    female_first_male_last = ((df["first_gender"] == "F") & (df["last_gender"] == "M")).sum()
+    male_first_female_last = ((df["first_gender"] == "M") & (df["last_gender"] == "F")).sum()
 
-    retval = f"""Summary:
-  - Total authors = {total}.
-  - Consortium: {summary['CC']}.
-  - Unknown gender: first {sum(v for k, v in summary.items() if k.startswith("U"))}, last {sum(v for k, v in summary.items() if k.endswith("U"))}.
-  - Woman first author: {100. * sum(v for k, v in summary.items() if k.startswith("F")) / total:.02f}%.
-  - Woman last author: {100. * sum(v for k, v in summary.items() if k.endswith("F")) / total:.02f}%.
-  - Woman first, and last: {100. * summary["FF"] / total}% (i.e., {100. * summary["FF"] / float(summary["FM"] + summary["FF"])}% of female-first).
-  - Male last: {100. * (summary["FM"] + summary["MM"]) / total}%.
-  - Male first, woman last: {100. * summary["MF"] / total}% ({100. * summary["MF"] / float(summary["MF"] + summary["FF"])}% of female-last).
+    return f"""Summary:
+  - Total references = {total_n}.
+  - Consortium: {consortia_n}.
+  - Neutral/ambiguous gender: {first_neutral_n}/{last_neutral_n} (first/last).
+  - Female first author: {first_female_n} ({100. * first_female_n / total:.02f}%).
+  - Female last author: {last_female_n} ({100. * last_female_n / total:.02f}%).
+  - Female first&last: {female_first_and_last} ({100. * female_first_and_last / total:.02f}%; {100. * female_first_and_last / first_female_n:.02f}% of female-first).
+  - Female first, male last: {female_first_male_last} ({100. * female_first_male_last / total:0.2f}%; {100. * female_first_male_last / first_female_n:0.2f}% of female-first).
+  - Male first author: {first_male_n} ({100. * first_male_n / total:.02f}%).
+  - Male last author: {last_male_n} ({100. * last_male_n / total:.02f}%).
+  - Male first, female last: {male_first_female_last} ({100. * male_first_female_last / total:0.2f}%; {100. * male_first_female_last / last_female_n:0.2f}% of female-last).
 """
-    return retval
 
 
 if __name__ == "__main__":
